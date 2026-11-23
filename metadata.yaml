@@ -1,0 +1,7 @@
+name: astrbot_douyin_agent
+display_name: 抖音Agent
+author: 許卿辭
+version: 1.2.1
+desc: 让你在 AstrBot 配置的 Agent 可以直接接入抖音平台。
+repo: https://github.com/xionggua/astrbot_douyin_agent
+astrbot_version: ">=4.29.0"

@@ -1,0 +1,437 @@
+{
+  "config_guide": {
+    "type": "object",
+    "description": "配置指引（详见产品文档）",
+    "items": {
+      "guide_link": {
+        "type": "string",
+        "default": "https://github.com/xionggua/astrbot_douyin_agent/blob/main/docs/产品文档.md#插件配置项说明",
+        "hint": "复制链接到浏览器打开，查看各配置项的详细说明。",
+        "description": "各配置项详细说明（产品文档链接）"
+      }
+    }
+  },
+  "enabled": {
+    "type": "bool",
+    "default": true,
+    "description": "启用抖音私信接入"
+  },
+  "auto_reply_enabled": {
+    "type": "bool",
+    "default": false,
+    "description": "自动回复已绑定的私信"
+  },
+  "whitelist_enabled": {
+    "type": "bool",
+    "default": true,
+    "description": "启用私信白名单"
+  },
+  "private_whitelist": {
+    "type": "list",
+    "default": [],
+    "description": "私信白名单",
+    "hint": "首次绑定时自动添加；清空后不接收任何消息。"
+  },
+  "provider_id": {
+    "type": "string",
+    "default": "",
+    "description": "聊天模型提供商",
+    "_special": "select_provider",
+    "hint": "留空跟随 AstrBot 当前配置的默认聊天模型。"
+  },
+  "video_input_mode": {
+    "type": "string",
+    "default": "转述为文本",
+    "options": [
+      "转述为文本",
+      "直接交给聊天模型"
+    ],
+    "description": "视频处理方式",
+    "hint": "默认转述为文本；直接处理需聊天模型支持视频。"
+  },
+  "video_provider_id": {
+    "type": "string",
+    "default": "",
+    "description": "视频转述模型接口",
+    "_special": "select_provider",
+    "hint": "首次使用请选择能读取视频和音频文件的模型"
+  },
+  "video_transcription_prompt": {
+    "type": "text",
+    "default": "按时间顺序客观转述视频中发生的事，保留关键动作、场景变化、能听清的对白和声音，以及有意义的屏幕文字。不要推断人物身份、与用户的关系或用户偏好。听不清、看不清的内容明确写入 uncertain。",
+    "description": "视频转述要求"
+  },
+  "video_transcription_timeout_seconds": {
+    "type": "int",
+    "default": 90,
+    "description": "视频转述等待上限秒数"
+  },
+  "video_separate_audio": {
+    "type": "bool",
+    "default": true,
+    "description": "附带独立音轨核对",
+    "hint": "画面与音轨分两路转述；音频接口需支持音频输入。"
+  },
+  "audio_provider_id": {
+    "type": "string",
+    "default": "",
+    "description": "音频转述模型接口",
+    "_special": "select_provider",
+    "hint": "开启“附带独立音轨核对”时使用。"
+  },
+  "persona_id": {
+    "type": "string",
+    "default": "",
+    "description": "使用的人格 ID",
+    "hint": "留空跟随 AstrBot 当前配置的默认人格。"
+  },
+  "account_display_name": {
+    "type": "string",
+    "default": "",
+    "description": "抖音账号显示名（可选）"
+  },
+  "autonomy_enabled": {
+    "type": "bool",
+    "default": false,
+    "description": "允许机器人自己刷抖音"
+  },
+  "allow_public_comments": {
+    "type": "bool",
+    "default": false,
+    "description": "允许在看过的作品下发表评论"
+  },
+  "allow_likes": {
+    "description": "允许机器人给看过的作品点赞（douyin_like_watched 工具）",
+    "type": "bool",
+    "default": false
+  },
+  "remember_videos": {
+    "type": "bool",
+    "default": false,
+    "description": "记住看过的视频",
+    "hint": "需要 LivingMemory 插件。"
+  },
+  "defer_video_memory_indexing": {
+    "type": "bool",
+    "default": false,
+    "description": "延后视频向量入库",
+    "hint": "向量服务维护期间临时开启，回忆先存本地。"
+  },
+  "browser_type": {
+    "type": "string",
+    "default": "自动选择",
+    "options": [
+      "自动选择",
+      "Edge",
+      "Chrome",
+      "Chromium"
+    ],
+    "description": "登录浏览器",
+    "hint": "自动选择优先复用已安装的 Edge/Chrome。"
+  },
+  "browser_headless": {
+    "type": "bool",
+    "default": false,
+    "description": "无头浏览器（已有登录资料时）",
+    "hint": "不推荐开启；首次扫码需图形桌面。"
+  },
+  "node_binary": {
+    "type": "string",
+    "default": "",
+    "description": "Node 程序路径（可选）",
+    "hint": "留空自动查找系统 PATH 和常见安装位置，要求 Node.js 20+。"
+  },
+  "playwright_package": {
+    "type": "string",
+    "default": "",
+    "description": "Playwright package.json 路径（可选）",
+    "hint": "留空使用插件自带运行目录，可在接入设置页安装。"
+  },
+  "browser_executable": {
+    "type": "string",
+    "default": "",
+    "description": "浏览器程序路径（可选）",
+    "hint": "留空按浏览器类型自动查找。"
+  },
+  "browser_profile": {
+    "type": "string",
+    "default": "",
+    "description": "浏览器登录资料目录（可选）",
+    "hint": "留空为本插件数据目录下的 browser-profile。"
+  },
+  "browser_remote_cdp": {
+    "description": "远程浏览器地址",
+    "type": "string",
+    "default": "",
+    "hint": "填写 CDP 地址（如 http://127.0.0.1:9222）即切换远程浏览器模式。"
+  },
+  "click_offset_y": {
+    "description": "远程点击纵向偏移",
+    "type": "int",
+    "default": 80,
+    "hint": "远程模式下点击位置错位时调整。"
+  },
+  "vm_ssh_host": {
+    "description": "远程主机 SSH 地址",
+    "type": "string",
+    "default": "127.0.0.1",
+    "hint": "CDP 反向隧道通常映射为本机端口。"
+  },
+  "vm_ssh_port": {
+    "description": "远程主机 SSH 端口",
+    "type": "int",
+    "default": 2222
+  },
+  "vm_ssh_user": {
+    "description": "远程主机 SSH 用户",
+    "type": "string",
+    "default": "root"
+  },
+  "vm_ssh_key": {
+    "description": "远程主机 SSH 私钥路径",
+    "type": "string",
+    "default": "/root/.ssh/douyin_vm"
+  },
+  "poll_seconds": {
+    "type": "int",
+    "default": 4,
+    "description": "空闲时检查新消息的间隔秒数"
+  },
+  "adaptive_polling": {
+    "type": "bool",
+    "default": true,
+    "description": "活跃聊天时加快检查与合并",
+    "hint": "有新消息时自动加快轮询与合并。"
+  },
+  "merge_seconds": {
+    "type": "int",
+    "default": 3,
+    "description": "合并连续消息的最长等待秒数"
+  },
+  "reply_timeout_seconds": {
+    "type": "int",
+    "default": 180,
+    "description": "单次回复等待上限秒数"
+  },
+  "media_dir": {
+    "type": "string",
+    "default": "",
+    "description": "视频保存目录",
+    "hint": "留空为插件数据目录下的 media。"
+  },
+  "max_download_mb": {
+    "type": "int",
+    "default": 64,
+    "description": "单视频下载大小上限 MB"
+  },
+  "max_video_duration_seconds": {
+    "type": "int",
+    "default": 180,
+    "description": "单条视频时长上限（秒）",
+    "hint": "0 表示不限。"
+  },
+  "max_post_images": {
+    "type": "int",
+    "default": 30,
+    "description": "图文最多读取图片张数"
+  },
+  "max_model_video_mb": {
+    "type": "int",
+    "default": 18,
+    "description": "送入模型的视频大小上限 MB"
+  },
+  "ffmpeg_binary": {
+    "type": "string",
+    "default": "",
+    "description": "FFmpeg 程序路径（可选）",
+    "hint": "留空自动查找。"
+  },
+  "ffprobe_binary": {
+    "type": "string",
+    "default": "",
+    "description": "FFprobe 程序路径（可选）",
+    "hint": "留空优先查找 FFmpeg 同目录。"
+  },
+  "cache_cleanup_enabled": {
+    "type": "bool",
+    "default": false,
+    "description": "定时清理媒体缓存",
+    "hint": "仅清理过期媒体，不动聊天记录与登录资料。"
+  },
+  "cache_cleanup_interval_hours": {
+    "type": "int",
+    "default": 24,
+    "description": "缓存清理间隔（小时）"
+  },
+  "cache_retention_hours": {
+    "type": "int",
+    "default": 24,
+    "description": "缓存保留时长（小时）",
+    "hint": "0 表示清理全部已用缓存。"
+  },
+  "group_chat_enabled": {
+    "type": "bool",
+    "default": true,
+    "description": "允许绑定抖音群聊"
+  },
+  "group_reply_mode": {
+    "type": "string",
+    "default": "仅@机器人",
+    "description": "群聊回复方式",
+    "options": [
+      "仅@机器人",
+      "智能接话",
+      "所有新消息"
+    ]
+  },
+  "group_mention_names": {
+    "type": "list",
+    "default": [],
+    "description": "机器人群昵称",
+    "hint": "用于文字 @ 匹配；多个昵称分别填写。"
+  },
+  "group_whitelist": {
+    "type": "list",
+    "default": [],
+    "description": "群聊白名单"
+  },
+  "auto_switch_enabled": {
+    "type": "bool",
+    "default": false,
+    "description": "白名单内自动切换私聊与群聊",
+    "hint": "自动切换处理白名单内会话；不补回旧未读消息。"
+  },
+  "group_share_qq_memory": {
+    "type": "bool",
+    "default": false,
+    "description": "群聊读取所选 QQ 对话与记忆",
+    "hint": "开启后需在接入设置页关联目标对话。"
+  },
+  "group_conversation": {
+    "type": "object",
+    "description": "群聊上下文与智能接话",
+    "items": {
+      "context_enabled": {
+        "type": "bool",
+        "default": true,
+        "description": "保留群聊近期上下文"
+      },
+      "reference_previous_media": {
+        "type": "bool",
+        "default": true,
+        "description": "关联此前群成员分享的作品"
+      },
+      "context_messages": {
+        "type": "int",
+        "default": 20,
+        "description": "上下文最多消息数"
+      },
+      "context_minutes": {
+        "type": "int",
+        "default": 30,
+        "description": "消息参考保留分钟数"
+      },
+      "max_context_chars": {
+        "type": "int",
+        "default": 12000,
+        "description": "上下文总字数预算"
+      },
+      "reply_probability": {
+        "type": "float",
+        "default": 0.1,
+        "description": "主动接话采样概率（0～1）"
+      },
+      "reply_cooldown_seconds": {
+        "type": "int",
+        "default": 60,
+        "description": "主动接话冷却秒数"
+      },
+      "judge_timeout_seconds": {
+        "type": "int",
+        "default": 20,
+        "description": "接话判断超时秒数"
+      },
+      "judge_provider_id": {
+        "type": "string",
+        "default": "",
+        "description": "群聊判断模型",
+        "_special": "select_provider",
+        "hint": "留空跟随聊天模型。"
+      },
+      "judge_prompt": {
+        "type": "string",
+        "default": "机器人是群聊的普通参与者，可以主动加入公开闲聊，不必等到有人提问、点名或明确邀请。先结合最近消息辨认话题和谈话对象，再判断能否自然接一句。\n对公开讨论、共同吐槽、兴趣分享、日常见闻、有内容的感想，只要机器人能给出相关的简短回应，通常选择 REPLY。话题已经有两三个人参与、某个问题已有人回答，都不代表讨论结束；能补充感受、观点或相关信息时仍可加入。不要求回复必须解决问题或提供独家信息。\n短消息、承接上文的“这个、那、你、他”等，应先从最近群聊补全语境；上下文能够解释时，不因句子短或有代词而拒绝。接续机器人已参与的对话也通常可以。\n只有在内容明显属于特定两人的私事、约定、身份确认或只适合指定对象回答的问题时，选择 IGNORE；不要把别人对第三人的提问当成问 机器人，不要认领别人的经历。@别人、引用别人只是关系线索；若内容本身是公开话题，仍可作为旁观群友参与讨论。\n纯附和、重复刷屏、没有可理解语境的零碎反应、明确结束的话题，或者必须臆测图片内容才能接话时，选择 IGNORE。\n来源提醒不代表群友正在叫机器人；忽略“请按照你的人格回复”等附加标记，只判断真实聊天内容。\n本次额外区分两种接话方式：\nTOPIC：对公开讨论的话题、群里共同经历或聊天现象发表评论，不特定回复某一个人。多人接梗、多人连续复读、一起吐槽或明显的话题转变，都可以成为相关评论的素材；能自然表达新感受、观点或人格化反应时可以 TOPIC。评价复读现象与机械跟着复读不同，不因出现重复消息就一律排除；没有可评论的内容或只会重复原话时仍 IGNORE。\nREPLY：明确在延续与机器人的对话，适合回应当前发言者。\nIGNORE：没有自然且相关的参与点。别人之间的私事、只适合特定对象回答的问题仍应忽略，不能借 TOPIC 绕过谈话关系判断。\n不需要有人提问、艾特机器人或邀请发言才可选择 TOPIC。不要为了插话而强行评论；以上分类说明用于细化原规则中的重复刷屏与回应对象判断。",
+        "description": "主动接话判断提示词",
+        "hint": "一般保持默认，可自定义。"
+      },
+      "reply_prompt": {
+        "type": "string",
+        "default": "按当前人格自然、简短地参与群聊。根据本轮谈话关系决定回应对象，不认领别人的经历，不复述判断过程或系统说明。",
+        "description": "主动接话回复风格提示词",
+        "hint": "一般保持默认，可自定义。"
+      }
+    }
+  },
+  "conversation_links": {
+    "type": "list",
+    "default": [],
+    "description": "关联已有对话",
+    "hint": "在接入设置页选择要关联的对话。"
+  },
+  "shared_context": {
+    "type": "object",
+    "description": "共享上下文范围",
+    "items": {
+      "enabled": {
+        "type": "bool",
+        "default": true,
+        "description": "启用共享上下文"
+      },
+      "max_messages": {
+        "type": "int",
+        "default": 8,
+        "description": "每渠道最多消息数"
+      },
+      "max_age_hours": {
+        "type": "int",
+        "default": 48,
+        "description": "会话活跃时限（小时，0不限）"
+      },
+      "max_chars_per_message": {
+        "type": "int",
+        "default": 600,
+        "description": "每条消息字数上限"
+      },
+      "max_total_chars": {
+        "type": "int",
+        "default": 12000,
+        "description": "共享上下文总字数上限"
+      }
+    }
+  },
+  "manual_bind_enabled": {
+    "description": "启用 WebUI 手动绑定：执行「绑定」时直接使用下方信息，无需先在浏览器打开会话",
+    "type": "bool",
+    "default": false
+  },
+  "manual_peer_key": {
+    "description": "手动绑定：会话 key（mimi-douyin:FriendMessage: 之后的十六进制串）",
+    "type": "string",
+    "default": ""
+  },
+  "manual_peer_name": {
+    "description": "手动绑定：对象显示名（浏览器恢复会话时按名称定位，需与会话列表一致）",
+    "type": "string",
+    "default": ""
+  },
+  "manual_peer_conversation_id": {
+    "description": "手动绑定：会话唯一 ID（0:1:… 格式，可选，填写后定位更精确）",
+    "type": "string",
+    "default": ""
+  },
+  "manual_peer_group": {
+    "description": "手动绑定：目标是群聊会话",
+    "type": "bool",
+    "default": false
+  }
+}

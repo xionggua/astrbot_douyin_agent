@@ -1,0 +1,13 @@
+data/
+.venv/
+node_modules/
+__pycache__/
+*.pyc
+*.egg-info/
+build/
+dist/
+.env
+config.json
+chat-*.jpg
+.venv-ci/
+.coverage

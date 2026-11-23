@@ -1,0 +1,304 @@
+"""Native plugin setup page: server-side directory chooser and dependency setup."""
+
+from __future__ import annotations
+
+import asyncio
+import os
+import platform as _platform
+import shutil
+import subprocess
+import time
+from uuid import uuid4
+
+from astrbot.api.web import request
+
+from .bridge import BrowserError
+from .runtime import RuntimeEnvironment, browse_directories
+from .mimi_douyin.cache import media_settings,validate_media_settings
+from .conversation_context import validate_settings
+from .group_conversation import validate_settings as validate_group_settings
+
+
+class SetupAPI:
+    def __init__(self,owner):
+        self.owner=owner
+        self.install_task=None
+        self.install_state={'running':False,'message':'尚未安装','component':''}
+        self.vscreen_install_task=None
+        self.vscreen_install_state={'running':False,'message':'尚未安装','component':'虚拟屏套件'}
+        self.vscreen_state={'running':False,'message':'虚拟屏未启动','url':'','x11vnc_pid':None,'websockify_pid':None}
+
+    def routes(self):
+        return [('setup/status',self.status,['GET']),('setup/browse',self.browse,['POST']),
+                ('setup/save',self.save,['POST']),('setup/install',self.install,['POST']),
+                ('setup/install/status',self.install_status,['GET']),
+                ('vscreen/install',self.vscreen_install,['POST']),('vscreen/start',self.vscreen_start,['POST']),
+                ('vscreen/stop',self.vscreen_stop,['POST']),('vscreen/status',self.vscreen_status,['GET']),
+                ('context/status',self.context_status,['GET']),('context/conversations',self.context_conversations,['POST']),
+                ('group/settings',self.group_settings,['POST']),
+                ('context/settings',self.context_settings,['POST']),('context/link',self.context_link,['POST']),
+                ('setup/conversation/select',self.select_conversation,['POST'])]
+
+    async def select_conversation(self):
+        body=await request.json(default={})
+        try:
+            async with self.owner.action_lock:
+                if self.owner.config.get('auto_reply_enabled',False) or self.owner.job_lock.locked():
+                    raise BrowserError('请先暂停回复，再选择要绑定的会话。')
+                result=await self.owner.browser.call('select_conversation',body)
+                return {'status':'ok','data':result}
+        except BrowserError as exc:return {'status':'error','message':str(exc)}
+
+    async def context_status(self):
+        return {'status':'ok','data':{'settings':self.owner.context_sharing.settings,
+            'links':self.owner.context_sharing.links(),'source_session':self.owner.session_id(),
+            'memory_available':bool(self.owner.context_sharing.memory()),
+            'group_share_qq_memory':self.owner.config.get('group_share_qq_memory',False)}}
+
+    async def group_settings(self):
+        body=await request.json(default={})
+        try:
+            settings=validate_group_settings(body)
+            async with self.owner.action_lock:
+                if self.owner.job_lock.locked():raise BrowserError('正在处理消息，请等当前回复结束后保存群聊设置。')
+                old=self.owner.config.get('group_conversation',{})
+                self.owner.config['group_conversation']=settings
+                try:self.owner._save_config()
+                except Exception:self.owner.config['group_conversation']=old;raise
+            return {'status':'ok','data':{'settings':settings}}
+        except (BrowserError,TypeError,ValueError) as error:return {'status':'error','message':str(error)}
+
+    async def context_conversations(self):
+        body=await request.json(default={})
+        if not isinstance(body,dict):return {'status':'error','message':'请求应为设置对象。'}
+        return {'status':'ok','data':await self.owner.context_sharing.choices(body.get('search',''))}
+
+    async def context_settings(self):
+        body=await request.json(default={})
+        try:
+            settings=validate_settings(body)
+            old=self.owner.config.get('shared_context',{})
+            self.owner.config['shared_context']=settings
+            try:self.owner._save_config()
+            except Exception:self.owner.config['shared_context']=old;raise
+            return {'status':'ok','data':{'settings':settings}}
+        except (BrowserError,TypeError,ValueError) as exc:return {'status':'error','message':str(exc)}
+
+    async def context_link(self):
+        body=await request.json(default={})
+        if not isinstance(body,dict):return {'status':'error','message':'请求应为设置对象。'}
+        try:
+            busy='正在处理消息，请等当前回复结束后修改上下文关联。'
+            if self.owner.job_lock.locked():raise BrowserError(busy)
+            async with self.owner.action_lock:
+                # A reply may start while this request waits for an activity.
+                # Never hold action_lock while waiting for that reply's job_lock.
+                if self.owner.job_lock.locked():raise BrowserError(busy)
+                async with self.owner.job_lock:
+                    if body.get('action')=='remove':
+                        self.owner.context_sharing.remove_link(str(body.get('source_session') or self.owner.session_id()))
+                        return {'status':'ok','data':{'removed':True}}
+                    row=await self.owner.context_sharing.save_link(body)
+                    return {'status':'ok','data':row}
+        except (BrowserError,TypeError,ValueError) as exc:return {'status':'error','message':str(exc)}
+
+    async def status(self):
+        data=await self.owner.runtime.diagnose()
+        memory=self.owner.context.get_registered_star('astrbot_plugin_livingmemory')
+        data.update({'bot':self.owner.status(),'install':self.install_state,
+            'vscreen_install':self.vscreen_install_state,
+            'vscreen':self.vscreen_public(),
+            'remote_cdp':bool(self.owner.config.get('browser_remote_cdp')),
+            'system':_platform.system(),
+            'models':{'chat':self.owner.config.get('provider_id') or '跟随 AstrBot 当前配置',
+                      'video':self.owner.config.get('video_provider_id') or '尚未选择视频模型'},
+            'optional_memory_available':bool(memory and memory.activated),
+            'autonomy_enabled':bool(self.owner.config.get('autonomy_enabled',False)),
+            'allow_public_comments':bool(self.owner.config.get('allow_public_comments',False)),
+            'group_chat_enabled':self.owner.config.get('group_chat_enabled',True),
+            'group_reply_mode':self.owner.config.get('group_reply_mode','仅@机器人'),
+            'group_conversation':self.owner.group_conversation.settings,
+            'group_mention_names':self.owner.config.get('group_mention_names',[]),
+            'group_share_qq_memory':self.owner.config.get('group_share_qq_memory',False),
+            'auto_switch_enabled':self.owner.config.get('auto_switch_enabled',False),
+            'account_display_name':self.owner.config.get('account_display_name',''),
+            **media_settings(self.owner.config),'cache_cleanup':self.owner.cache.status()})
+        return {'status':'ok','data':data}
+
+    async def browse(self):
+        payload=await request.json(default={})
+        try:
+            value=payload.get('path','') if isinstance(payload,dict) else ''
+            if not isinstance(value,str):raise BrowserError('目录路径应为文本。')
+            return {'status':'ok','data':await asyncio.to_thread(browse_directories,value)}
+        except (BrowserError,OSError) as exc:return {'status':'error','message':str(exc)}
+
+    async def save(self):
+        payload=await request.json(default={})
+        if not isinstance(payload,dict) or not isinstance(payload.get('media_dir'),str):
+            return {'status':'error','message':'请填写视频保存目录，留空使用默认目录。'}
+        try:
+            async with self.owner.action_lock:
+                if self.owner.job_lock.locked():raise BrowserError('正在处理消息或视频，请等本轮结束后保存目录。')
+                async with self.owner.job_lock:
+                    raw=payload['media_dir'].strip()
+                    kind=payload.get('browser_type',self.owner.config.get('browser_type','自动选择'))
+                    if kind not in ('自动选择','Edge','Chrome','Chromium'):raise BrowserError('浏览器类型不受支持。')
+                    flags={key:payload[key] for key in ('autonomy_enabled','allow_public_comments','group_chat_enabled','group_share_qq_memory','auto_switch_enabled') if key in payload}
+                    group_mode=payload.get('group_reply_mode',self.owner.config.get('group_reply_mode','仅@机器人'))
+                    if group_mode not in ('仅@机器人','智能接话','所有新消息'):raise BrowserError('请选择群聊回复方式。')
+                    mention_names=payload.get('group_mention_names',self.owner.config.get('group_mention_names',[]))
+                    if isinstance(mention_names,str):mention_names=[name.strip() for name in mention_names.split(',') if name.strip()]
+                    if not isinstance(mention_names,list) or not all(isinstance(name,str) and 0<len(name)<=80 for name in mention_names):raise BrowserError('机器人群昵称应为逗号分隔的名称。')
+                    preferences=validate_media_settings(payload)
+                    if any(not isinstance(value,bool) for value in flags.values()):raise BrowserError('活动开关应为布尔值。')
+                    display_name=payload.get('account_display_name',self.owner.config.get('account_display_name',''))
+                    if not isinstance(display_name,str) or len(display_name)>80:raise BrowserError('抖音账号显示名应为不超过 80 字的文本。')
+                    proposed=RuntimeEnvironment({**self.owner.config,'media_dir':raw,**preferences},self.owner.data_dir)
+                    directory=proposed.media_dir
+                    directory.mkdir(parents=True,exist_ok=True)
+                    probe=directory/('.mimi-write-check-'+uuid4().hex)
+                    try:
+                        with probe.open('x',encoding='utf-8') as file:file.write('')
+                    finally:
+                        if probe.exists():probe.unlink()
+                    old_dir=self.owner.media_dir
+                    running=bool(self.owner.browser.process and self.owner.browser.process.returncode is None)
+                    old_limit=self.owner.config.get('max_download_mb',64)
+                    next_limit=preferences.get('max_download_mb',old_limit)
+                    old_duration=self.owner.config.get('max_video_duration_seconds',180)
+                    next_duration=preferences.get('max_video_duration_seconds',old_duration)
+                    if running:await self.owner.browser.call('configure',{'media_dir':str(directory),'max_download_mb':next_limit,
+                        'max_video_duration_seconds':next_duration})
+                    previous=dict(self.owner.config)
+                    self.owner.config['account_display_name']=display_name.strip()
+                    self.owner.config['media_dir']=raw
+                    self.owner.config['browser_type']=kind
+                    self.owner.config.update(flags)
+                    self.owner.config.update(group_reply_mode=group_mode,group_mention_names=mention_names)
+                    self.owner.config.update(preferences)
+                    try:self.owner._save_config()
+                    except Exception:
+                        self.owner.config.clear();self.owner.config.update(previous)
+                        if running:await self.owner.browser.call('configure',{'media_dir':old_dir,'max_download_mb':old_limit,
+                            'max_video_duration_seconds':old_duration})
+                        raise
+                    self.owner.browser.config=self.owner.runtime.settings()
+                    if previous.get('auto_switch_enabled',False)!=self.owner.config.get('auto_switch_enabled',False):self.owner.switching.reset()
+                    self.owner.cache.settings_changed()
+                    return {'status':'ok','data':{'media_dir':str(directory),'setting':raw,
+                        'browser_reopen_needed':running and previous['browser_type']!=kind,
+                        **media_settings(self.owner.config),'cache_cleanup':self.owner.cache.status(),
+                        'message':'设置已保存，下载上限已生效。已有缓存和登录资料保持原位。'}}
+        except (BrowserError,OSError,ValueError) as exc:return {'status':'error','message':str(exc)}
+
+    async def install(self):
+        payload=await request.json(default={})
+        component=payload.get('component') if isinstance(payload,dict) else None
+        if component not in ('playwright','chromium'):return {'status':'error','message':'请选择 Playwright 或 Chromium。'}
+        if self.install_task and not self.install_task.done():return {'status':'ok','data':self.install_state}
+        self.install_state={'running':True,'component':component,'message':'正在安装，请保持网络可用。','started_at':time.time()}
+        async def run():
+            try:
+                result=await self.owner.runtime.install(component)
+                self.install_state={**self.install_state,'running':False,'success':True,'message':'安装完成。','result':result}
+            except asyncio.CancelledError:
+                self.install_state={**self.install_state,'running':False,'success':False,'message':'安装已中止。'}
+                raise
+            except Exception as exc:
+                self.install_state={**self.install_state,'running':False,'success':False,'message':str(exc)[:500]}
+        self.install_task=asyncio.create_task(run())
+        return {'status':'ok','data':self.install_state}
+
+    async def install_status(self):return {'status':'ok','data':self.install_state}
+
+    # ─── VSCREEN_V1：虚拟屏套件（Xvfb + x11vnc + noVNC，全绑 127.0.0.1）───
+    def _vscreen_pkg(self):
+        for pm,packages in (('dnf',('xorg-x11-server-Xvfb','x11vnc','novnc','websockify')),
+                            ('yum',('xorg-x11-server-Xvfb','x11vnc','novnc','websockify')),
+                            ('apt-get',('xvfb','x11vnc','novnc','websockify')),
+                            ('pacman',('xorg-server-xvfb','x11vnc','novnc','websockify'))):
+            if shutil.which(pm):return pm,packages
+        return None,()
+
+    def _vscreen_run(self,args):
+        prefix=['sudo','-n'] if hasattr(os,'geteuid') and os.geteuid()!=0 else []
+        return subprocess.run(prefix+args,capture_output=True,text=True,timeout=900)
+
+    async def vscreen_install(self):
+        if _platform.system()!='Linux':return {'status':'error','message':'虚拟屏套件仅支持 Linux。'}
+        if self.vscreen_install_task and not self.vscreen_install_task.done():return {'status':'ok','data':self.vscreen_install_state}
+        pm,packages=self._vscreen_pkg()
+        if pm is None:return {'status':'error','message':'未识别到 dnf/yum/apt/pacman 包管理器，无法自动安装。请手动安装 Xvfb、x11vnc、novnc、websockify。'}
+        self.vscreen_install_state={'running':True,'component':'虚拟屏套件','message':f'正在通过 {pm} 安装：{" ".join(packages)}','started_at':time.time()}
+        async def run():
+            try:
+                cmd=[pm]+(['-y','--noconfirm'] if pm=='pacman' else ['-y'])+list(packages)
+                if pm=='pacman':cmd=[pm,'-S','--noconfirm']+list(packages)
+                proc=await asyncio.to_thread(self._vscreen_run,cmd)
+                if proc.returncode==0:
+                    self.vscreen_install_state={**self.vscreen_install_state,'running':False,'success':True,'message':'虚拟屏套件安装完成。'}
+                else:
+                    tail=(proc.stderr or proc.stdout or '').strip().splitlines()[-3:]
+                    self.vscreen_install_state={**self.vscreen_install_state,'running':False,'success':False,'message':'安装失败（可能缺少权限或软件源未启用 EPEL）：'+' / '.join(tail)[:400]}
+            except Exception as exc:
+                self.vscreen_install_state={**self.vscreen_install_state,'running':False,'success':False,'message':str(exc)[:400]}
+        self.vscreen_install_task=asyncio.create_task(run())
+        return {'status':'ok','data':self.vscreen_install_state}
+
+    def _vscreen_alive(self,proc):
+        return proc is not None and proc.poll() is None
+
+    async def vscreen_start(self):
+        if _platform.system()!='Linux':return {'status':'error','message':'虚拟屏套件仅支持 Linux。'}
+        if self.owner.config.get('browser_remote_cdp'):return {'status':'error','message':'当前为远程浏览器模式，浏览器运行在远程主机上，本机无需虚拟屏。'}
+        if self.vscreen_state.get('running') and self._vscreen_alive(self.vscreen_state.get('_x11vnc')):
+            return {'status':'ok','data':self.vscreen_public()}
+        try:
+            xvfb_check=subprocess.run(['pgrep','-x','Xvfb'],capture_output=True,text=True)
+            if xvfb_check.returncode!=0:
+                subprocess.Popen(['Xvfb',':99','-screen','0','1280x800x24','-nolisten','tcp'],
+                                 stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL,start_new_session=True)
+                await asyncio.sleep(1.2)
+                xvfb_check=subprocess.run(['pgrep','-x','Xvfb'],capture_output=True,text=True)
+                if xvfb_check.returncode!=0:
+                    return {'status':'error','message':'Xvfb 启动失败：请先安装虚拟屏套件（一键安装）。'}
+            novnc_web='/usr/share/novnc'
+            if not shutil.which('websockify') or not shutil.which('x11vnc') or not shutil.path.isdir(novnc_web):
+                return {'status':'error','message':'缺少 x11vnc/websockify/noVNC 组件，请先点击「一键安装虚拟屏套件」。'}
+            x11vnc=subprocess.Popen(['x11vnc','-display',':99','-localhost','-forever','-shared','-nopw','-rfbport','5900'],
+                                    stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL,start_new_session=True)
+            await asyncio.sleep(0.8)
+            if x11vnc.poll() is not None:
+                return {'status':'error','message':'x11vnc 启动失败（虚拟屏可能未就绪，请稍后重试）。'}
+            websockify=subprocess.Popen(['websockify','--web',novnc_web,'127.0.0.1:6080','127.0.0.1:5900'],
+                                        stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL,start_new_session=True)
+            await asyncio.sleep(0.5)
+            if websockify.poll() is not None:
+                x11vnc.terminate()
+                return {'status':'error','message':'websockify 启动失败（6080 端口可能被占用）。'}
+            self.vscreen_state={'running':True,'message':'虚拟屏观察窗已启动','url':'http://127.0.0.1:6080/vnc.html',
+                               'x11vnc_pid':x11vnc.pid,'websockify_pid':websockify.pid,'_x11vnc':x11vnc,'_websockify':websockify}
+            return {'status':'ok','data':self.vscreen_public()}
+        except Exception as exc:
+            return {'status':'error','message':'虚拟屏启动失败：'+str(exc)[:300]}
+
+    def vscreen_public(self):
+        return {k:v for k,v in self.vscreen_state.items() if not k.startswith('_')}
+
+    async def vscreen_stop(self):
+        stopped=[]
+        for key,proc in (('_websockify',self.vscreen_state.get('_websockify')),('_x11vnc',self.vscreen_state.get('_x11vnc'))):
+            if self._vscreen_alive(proc):
+                proc.terminate();stopped.append(key.lstrip('_'))
+        self.vscreen_state={'running':False,'message':'虚拟屏观察窗已关闭（虚拟屏与浏览器不受影响）','url':'','x11vnc_pid':None,'websockify_pid':None}
+        return {'status':'ok','data':{**self.vscreen_state,'stopped':stopped}}
+
+    async def vscreen_status(self):
+        running=self.vscreen_state.get('running') and self._vscreen_alive(self.vscreen_state.get('_x11vnc'))
+        return {'status':'ok','data':{**self.vscreen_public(),'running':running}}
+
+    async def terminate(self):
+        if self.install_task and not self.install_task.done():
+            self.install_task.cancel()
+            await asyncio.gather(self.install_task,return_exceptions=True)
