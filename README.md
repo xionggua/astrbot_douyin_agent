@@ -1,7 +1,7 @@
 # 抖音Agent · AstrBot 插件
 
-<a href="https://t.me/xuqingci_douyin_agent"><img src="assets/badge_telegram.svg" alt="Telegram 交流群"></a>
-<a href="https://qm.qq.com/q/rQK9dPdVoA"><img src="assets/badge_qq.svg" alt="QQ 交流群"></a>
+<a href="https://t.me/xuqingci_douyin_agent"><img src="https://raw.githubusercontent.com/xionggua/astrbot_douyin_agent/main/assets/badge_telegram.svg" alt="Telegram 交流群"></a>
+<a href="https://qm.qq.com/q/rQK9dPdVoA"><img src="https://raw.githubusercontent.com/xionggua/astrbot_douyin_agent/main/assets/badge_qq.svg" alt="QQ 交流群"></a>
 
 让你在 AstrBot 配置的 Agent 可以直接接入抖音平台。
 
@@ -87,7 +87,7 @@
 
 | 支付宝 | 微信 |
 |:---:|:---:|
-| <img src="assets/alipay_qr.jpg" width="260" alt="支付宝收款码"/> | <img src="assets/wechat_qr.png" width="260" alt="微信收款码"/> |
+| <img src="https://raw.githubusercontent.com/xionggua/astrbot_douyin_agent/main/assets/alipay_qr.jpg" width="260" alt="支付宝收款码"/> | <img src="https://raw.githubusercontent.com/xionggua/astrbot_douyin_agent/main/assets/wechat_qr.png" width="260" alt="微信收款码"/> |
 
 几点说明：
 
