@@ -58,6 +58,16 @@ async function open(config) {
     process.env.DOUYIN_VM_SSH_PORT=String(config.vm_ssh_port||'');
     process.env.DOUYIN_VM_SSH_USER=String(config.vm_ssh_user||'');
     process.env.DOUYIN_VM_SSH_HOST=String(config.vm_ssh_host||'');
+    // XDOCHECK_V1：远程点击链路预检——xdotool 缺失或虚拟屏失效时报出安装指引，
+    // 而不是退到"消息面板多次点击后仍未打开"的误导性错误（install.sh 旧版漏装 xdotool 的实锤教训）
+    {
+      const {execSync}=await import('node:child_process');
+      try{
+        execSync(xdoPrefix(true)+'getdisplaygeometry'+xdoSuffix(true),{timeout:8000,stdio:'ignore'});
+      }catch(e){
+        throw new Error('远程主机的点击链路不可用（xdotool 缺失，或虚拟屏 :99 失效）。请在远程主机安装 xdotool（apt/dnf install -y xdotool）或重跑部署脚本 install.sh，然后重试。');
+      }
+    }
   }else{
     const options={headless:!!config.headless,viewport:{width:800,height:600},acceptDownloads:true,args:["--disable-gpu","--disable-dev-shm-usage","--disable-extensions","--disable-background-networking","--disable-sync","--disable-translate","--no-first-run","--disable-features=TranslateUI","--mute-audio","--autoplay-policy=no-user-gesture-required"]};
     if(config.browser_channel)options.channel=config.browser_channel;

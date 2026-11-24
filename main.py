@@ -1001,6 +1001,10 @@ class MimiDouyinDM(Star):
         if (response is not None and response.role!='err' and not event.is_stopped()
                 and (event.get_extra('douyin_video_attached') or event.get_extra('douyin_video_transcript'))):
             event.set_extra('douyin_video_understood',True)
+        # MEMORYWRITE_V1：私聊关联开启长期记忆时，本轮抖音对话镜像写入关联 QQ 会话，
+        # QQ 端原生检索即可召回（“抖音说过的话”不再失忆）；群聊只读不写。
+        if response is not None and response.role!='err' and not event.is_stopped():
+            await self.context_sharing.mirror_write(event,response)
         if response is None or response.role=='err' or event.is_stopped():
             logger.info('[抖音Agent] DIAG_DONE err job=%s',event.job_id[:8]) # DESIGN_V2
             self.ledger.job(event.job_id,'failed')

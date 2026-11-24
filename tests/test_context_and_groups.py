@@ -17,6 +17,51 @@ from astrbot_douyin_agent.main import MimiDouyinDM
 def run(coro):return asyncio.run(coro)
 
 
+class _FakeRaw(dict):
+    def __init__(self, data): super().__init__(copy.deepcopy(data)); self.save_config = Mock()
+
+
+def _fake_get(raw, key, default=None):
+    cur = raw
+    for part in key.split('.'):
+        if not isinstance(cur, dict) or part not in cur: return default
+        cur = cur[part]
+    return cur
+
+
+def _fake_memory(config):
+    """可写回的 LivingMemory 桩：_raw_config 支持增删改与 save_config 回读。"""
+    raw = _FakeRaw(config)
+    cm = NS(_raw_config=raw, get=lambda key, default=None: _fake_get(raw, key, default), _load_config=Mock())
+    engine = NS(search_memories=AsyncMock(return_value=[]), add_memory=AsyncMock(return_value=1))
+    return NS(config_manager=cm, initializer=NS(memory_engine=engine)), raw
+
+
+def test_alias_auto_alignment_on_bind_and_unbind():
+    # MEMORYALIAS_V1：绑定自动写身份对齐行 + 互通适配器；原生四件套齐备后镜像退场；解绑自动清理。
+    async def check():
+        owner,source,target,conversation=fixture()
+        memory,raw=_fake_memory({'access_control':{'identity_aliases':''},'filtering_settings':{}})
+        owner.context.get_registered_star=lambda name:NS(activated=True,star_cls=memory)
+        sharing=ConversationContext(owner)
+        row=await sharing.save_link({'target_session':target,'target_conversation_id':'selected-qq','share_memory':True})
+        assert row['share_memory'] is True
+        assert raw['access_control']['identity_aliases']=='mimi-douyin:alice=alice'
+        assert raw['filtering_settings']['shared_adapter_ids']==['mimi-douyin','qq']
+        assert not row.get('memory_native') and row['memory_note']
+        assert 'memory_note' not in owner.config['conversation_links'][-1]
+        raw['filtering_settings']['memory_scope_mode']='user'
+        raw['filtering_settings']['user_scope_ignore_platform']=True
+        assert sharing.native_share_active(source,target)
+        event=NS(unified_msg_origin=source,get_message_str=lambda:'今天聊了很多关于旅行计划的事情')
+        response=NS(role='assistant',content='你们的旅行计划听起来很棒，记得提前订好住宿。')
+        await sharing.mirror_write(event,response)
+        memory.initializer.memory_engine.add_memory.assert_not_called()  # 原生互通生效，镜像退场
+        sharing.remove_link(source)
+        assert 'mimi-douyin:alice' not in raw['access_control']['identity_aliases']
+    run(check())
+
+
 def fixture():
     source='douyin:FriendMessage:alice';target='qq:FriendMessage:alice'
     history=[{'role':'system','content':'must not be copied'},
@@ -73,9 +118,12 @@ def test_group_private_link_is_rejected_without_mutation():
         except BrowserError:pass
         assert owner.config==before;owner._save_config.assert_not_called()
         owner.session_id=lambda:source
-        try:await sharing.save_link({'target_session':target,'target_conversation_id':'selected-qq','share_memory':True});assert False
-        except BrowserError:pass
-        assert owner.config==before
+        # MEMORYSKIP_V1：记忆条件不满足时降级为普通关联，不再整体拒绝
+        row=await sharing.save_link({'target_session':target,'target_conversation_id':'selected-qq','share_memory':True})
+        assert row['share_memory'] is False
+        assert row['memory_skipped']
+        stored=owner.config['conversation_links'][-1]
+        assert stored['share_memory'] is False and 'memory_skipped' not in stored
         row=await sharing.save_link({'target_session':target,'target_conversation_id':'selected-qq','bidirectional':True})
         assert row['target_conversation_id']=='selected-qq'
     run(check())
@@ -110,6 +158,57 @@ def test_invalid_context_limits_are_rejected():
         try:validate_settings({'max_messages':value});assert False
         except BrowserError:pass
     assert validate_settings({'max_age_hours':'0'})['max_age_hours']==0
+
+
+def test_private_round_is_mirrored_into_linked_qq_memory():
+    # MEMORYWRITE_V1：抖音私聊轮次镜像写入关联 QQ 会话（add_memory），QQ 端原生检索可召回；
+    # 过短轮次与群聊会话不写入（群聊保持只读设计）。
+    async def check():
+        owner,source,target,conversation=fixture()
+        engine=NS(search_memories=AsyncMock(return_value=[]),add_memory=AsyncMock(return_value=1))
+        memory=NS(config_manager=NS(get=lambda key,default='':default),initializer=NS(memory_engine=engine))
+        owner.context.get_registered_star=lambda name:NS(activated=True,star_cls=memory)
+        owner.context.persona_manager=NS(get_default_persona_v3=AsyncMock(return_value={'name':'Default'}))
+        sharing=ConversationContext(owner)
+        row=await sharing.save_link({'target_session':target,'target_conversation_id':'selected-qq','share_memory':True})
+        assert row['share_memory'] is True
+        event=NS(unified_msg_origin=source,get_message_str=lambda:'我们今天去看了海边的日落')
+        response=NS(role='assistant',content='听起来很浪漫，海边的日落总是让人放松。')
+        await sharing.mirror_write(event,response)
+        assert engine.add_memory.await_count==1
+        kwargs=engine.add_memory.call_args.kwargs
+        assert kwargs['session_id']==target
+        assert kwargs['metadata']['adapter_id']=='qq'
+        assert kwargs['persona_id']=='Default'
+        assert '海边的日落' in kwargs['content']
+        await sharing.mirror_write(NS(unified_msg_origin=source,get_message_str=lambda:'嗯'),NS(role='assistant',content='好'))
+        assert engine.add_memory.await_count==1  # 过短轮次不写入
+        await sharing.mirror_write(NS(unified_msg_origin='douyin:GroupMessage:g1',get_message_str=lambda:'群里的这条消息足够长不会触发过短保护'),NS(role='assistant',content='回复内容也足够长不会触发过短保护'))
+        assert engine.add_memory.await_count==1  # 群聊只读不写
+    run(check())
+
+
+def test_private_link_memory_is_read_only_recall_without_livingmemory_config():
+    # MEMORYREAD_V2：私聊记忆参考与群聊同款——直调 LivingMemory 检索（只读），
+    # 不依赖 LivingMemory 侧任何配置（access_control.shared_private_sessions 在真实 LivingMemory 2.x 中不存在）。
+    async def check():
+        owner,source,target,conversation=fixture()
+        engine=NS(search_memories=AsyncMock(return_value=[NS(content='Private long-term fact')]))
+        memory=NS(config_manager=NS(get=lambda key,default='':default),initializer=NS(memory_engine=engine))
+        owner.context.get_registered_star=lambda name:NS(activated=True,star_cls=memory)
+        owner.context.persona_manager=NS(get_default_persona_v3=AsyncMock(return_value={'name':'Default'}))
+        sharing=ConversationContext(owner)
+        row=await sharing.save_link({'target_session':target,'target_conversation_id':'selected-qq','share_memory':True})
+        assert row['share_memory'] is True and not row['memory_skipped']
+        conversation.updated_at=0;owner.config['shared_context']['enabled']=False
+        request=NS(extra_user_content_parts=[])
+        await sharing.inject(NS(unified_msg_origin=source,get_message_str=lambda:'Remember?'),request)
+        assert 'Private long-term fact' in request.extra_user_content_parts[0].text
+        assert engine.search_memories.call_args.kwargs['session_id']==target
+        engine.search_memories.reset_mock()
+        await sharing.inject(NS(unified_msg_origin=target),request)  # 反向不检索记忆
+        assert engine.search_memories.assert_not_called() is None
+    run(check())
 
 
 def test_opted_in_group_memory_is_read_only_and_independent_of_recent_range():

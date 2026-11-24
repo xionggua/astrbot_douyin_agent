@@ -73,6 +73,9 @@
     $('context-enabled').checked=settings.enabled;
     for(const [id,key] of [['context-messages','max_messages'],['context-age','max_age_hours'],['context-chars','max_chars_per_message'],['context-total','max_total_chars']])$(id).value=settings[key];
     $('context-memory').disabled=!data.memory_available;
+    const note=$('context-memory-note');
+    if(data.memory_share_hint){note.hidden=false;note.textContent=data.memory_share_hint+'。关联仍会成功，记忆部分会先跳过。';}
+    else note.hidden=true;
     const currentLink=data.links.find(link=>link.source_session===contextSource);
     $('context-bidirectional').checked=currentLink?!!currentLink.bidirectional:true;
     $('context-memory').checked=currentLink?!!currentLink.share_memory:false;
@@ -105,7 +108,7 @@
   $('save-context-settings').addEventListener('click',()=>run(async()=>{unwrap(await bridge.apiPost('context/settings',{enabled:$('context-enabled').checked,
     max_messages:$('context-messages').value,max_age_hours:$('context-age').value,max_chars_per_message:$('context-chars').value,max_total_chars:$('context-total').value}));notice('上下文范围已保存，下一次回复生效。');await loadContext();}));
   $('save-context-link').addEventListener('click',()=>run(async()=>{const choice=contextChoices[Number($('context-conversation').value)];if(!$('context-conversation').value||!choice)throw new Error('请选择已有对话。');
-    unwrap(await bridge.apiPost('context/link',{source_session:contextSource,target_session:choice.session,target_conversation_id:choice.id,bidirectional:$('context-bidirectional').checked,share_memory:$('context-memory').checked}));notice('已有对话已关联，下一次回复可接续上下文。');await loadContext();}));
+    const result=unwrap(await bridge.apiPost('context/link',{source_session:contextSource,target_session:choice.session,target_conversation_id:choice.id,bidirectional:$('context-bidirectional').checked,share_memory:$('context-memory').checked}));notice(result.memory_skipped?('已有对话已关联；长期记忆未关联——'+result.memory_skipped):(result.memory_note?('已有对话已关联；'+result.memory_note):'已有对话已关联，下一次回复可接续上下文。'));await loadContext();}));
   $('list-douyin-conversations').addEventListener('click',()=>run(async()=>{const data=unwrap(await bridge.apiPost('control',{action:'conversations'}));douyinChoices=data.conversations||[];$('douyin-conversations').replaceChildren();
     for(const [index,choice] of douyinChoices.entries()){const option=document.createElement('option');option.value=String(index);option.textContent=choice.name;$('douyin-conversations').append(option);}notice('会话列表已刷新；暂停回复后可打开所选会话。');}));
   $('select-douyin-conversation').addEventListener('click',()=>run(async()=>{const choice=douyinChoices[Number($('douyin-conversations').value)];if(!choice)throw new Error('请先刷新并选择抖音会话。');unwrap(await bridge.apiPost('setup/conversation/select',choice.conversation_id?{conversation_id:choice.conversation_id}:{name:choice.name}));notice('会话已打开，核对对象后点击“绑定当前会话”。');}));

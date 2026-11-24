@@ -2,7 +2,7 @@ name: astrbot_douyin_agent
 display_name: 抖音Agent
 short_desc: 抖音私信 Agent：收发消息、看视频聊观后感、自主刷抖音。
 author: 許卿辭
-version: 1.2.1
+version: 1.2.1.1
 desc: 让你在 AstrBot 配置的 Agent 可以直接接入抖音平台。
 repo: https://github.com/xionggua/astrbot_douyin_agent
 social_link: https://github.com/xionggua

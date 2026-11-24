@@ -5,6 +5,7 @@ import copy
 import json
 import time
 
+from astrbot.api import logger
 from astrbot.core.agent.message import TextPart
 from .bridge import BrowserError
 
@@ -49,6 +50,98 @@ class ConversationContext:
             return None
         return star.star_cls
 
+    def memory_share_ready(self):
+        """长期记忆共享的就绪条件（供前端预检）：需 LivingMemory；群聊还需管理员开启群聊读取 QQ 记忆。"""
+        return self.memory_share_hint() is None
+
+    def memory_share_hint(self):
+        """长期记忆共享未就绪时的具体指引（None=已就绪）。与 save_link 的跳过原因同口径。
+        记忆参考为只读检索（直调 LivingMemory search_memories），无需 LivingMemory 侧任何配置。"""
+        memory = self.memory()
+        if not memory:
+            return '需先在插件市场安装并启用 LivingMemory 插件'
+        if session_kind(self.owner.session_id()) == 'GroupMessage':
+            if not self.owner.config.get('group_share_qq_memory', False):
+                return '需先开启插件配置「群聊（测试中）→ 群聊读取所选 QQ 对话与记忆」'
+        return None
+
+    # ── MEMORYALIAS_V1：身份对齐自动维护 ───────────────────────────────
+    # 关联绑定时自动向 LivingMemory 的 access_control.identity_aliases 写入
+    # “抖音身份 = 关联 QQ 身份”的对齐行，并把双方平台加入互通适配器列表；
+    # 解绑时自动删除。LivingMemory 配齐 user 作用域 + 跨适配器共享后，
+    # 记忆全原生双向互通（写入走其自身总结管线），镜像写入自动退场避免重复。
+
+    def _alias_line(self, source, target):
+        """对齐行：把抖音会话身份翻译成关联 QQ 会话的统一名（user 作用域对齐用）。"""
+        peer = source.split(':')[2] if source.count(':') >= 2 else source
+        qq = target.split(':')[2] if target.count(':') >= 2 else target
+        return 'mimi-douyin:%s=%s' % (peer, qq)
+
+    def _sync_memory_alias(self, memory, source, target, add):
+        """维护 LivingMemory 身份对齐行（绑定写入 / 解绑删除）。写的是其真实配置项；
+        失败仅降级提示，绝不影响关联本身。"""
+        try:
+            manager = memory.config_manager
+            raw = manager._raw_config
+            old = copy.deepcopy(raw.get('access_control', {}))
+            peer = source.split(':')[2] if source.count(':') >= 2 else source
+            prefix = 'mimi-douyin:%s=' % peer
+            lines = [l for l in str(old.get('identity_aliases', '')).splitlines()
+                     if l.strip() and not l.strip().startswith(prefix)]
+            if add: lines.append(self._alias_line(source, target))
+            merged = '\n'.join(lines)
+            raw.setdefault('access_control', {})['identity_aliases'] = merged
+            try:
+                raw.save_config(); manager._load_config()
+                if str(raw.get('access_control', {}).get('identity_aliases', '')) != merged:
+                    raise ValueError('identity_aliases 写入未生效')
+            except Exception:
+                raw['access_control'] = old; raw.save_config(); manager._load_config()
+                raise
+            return True
+        except Exception as exc:
+            logger.info('[抖音Agent] 身份对齐同步失败=%r', exc)
+            return False
+
+    def _sync_shared_adapters(self, memory, target):
+        """把 mimi-douyin 与关联会话平台加入 LivingMemory 互通适配器（仅在列表未配置时写入；
+        用户已自行配置互通组合时不改动。legacy 作用域下此配置无行为影响）。"""
+        try:
+            manager = memory.config_manager
+            raw = manager._raw_config
+            old = copy.deepcopy(raw.get('filtering_settings', {}))
+            if old.get('shared_adapter_ids'):
+                return True  # 用户自管互通策略，不越权改动
+            ids = ['mimi-douyin', target.partition(':')[0]]
+            raw.setdefault('filtering_settings', {})['shared_adapter_ids'] = ids
+            try:
+                raw.save_config(); manager._load_config()
+            except Exception:
+                raw['filtering_settings'] = old; raw.save_config(); manager._load_config(); raise
+            return True
+        except Exception as exc:
+            logger.info('[抖音Agent] 互通适配器同步失败=%r', exc)
+            return False
+
+    def native_share_active(self, source, target):
+        """LivingMemory 原生互通是否已生效：user 作用域 + 跨适配器共享 + 互通列表 + 身份对齐齐备。
+        生效时记忆全原生双向（写入走 LivingMemory 自身总结管线），镜像写入退场。"""
+        memory = self.memory()
+        if not memory: return False
+        try:
+            cfg = memory.config_manager
+            if str(cfg.get('filtering_settings.memory_scope_mode', '')) != 'user': return False
+            if not bool(cfg.get('filtering_settings.user_scope_ignore_platform', False)): return False
+            ids = cfg.get('filtering_settings.shared_adapter_ids') or []
+            if 'mimi-douyin' not in ids or target.partition(':')[0] not in ids: return False
+            peer = source.split(':')[2] if source.count(':') >= 2 else source
+            aliases = str(cfg.get('access_control.identity_aliases', ''))
+            if not any(l.strip().startswith('mimi-douyin:%s=' % peer) for l in aliases.splitlines()):
+                return False
+            return True
+        except Exception:
+            return False
+
     def links(self):
         result = [dict(row) for row in self.owner.config.get('conversation_links', [])]
         memory = self.memory()
@@ -81,6 +174,7 @@ class ConversationContext:
             raise BrowserError('当前抖音会话已切换，请刷新后重新选择关联来源。')
         target = str(body.get('target_session') or '').strip()
         source_kind = session_kind(source)
+        # 管理员隐私总闸：群聊读取 QQ 对话必须显式开启（与记忆无关，不降级）
         if source_kind=='GroupMessage' and not self.owner.config.get('group_share_qq_memory',False):
             raise BrowserError('请先开启“群聊读取所选 QQ 对话与记忆”，再选择群聊要参考的对话。')
         cross_private=source_kind=='GroupMessage' and session_kind(target)=='FriendMessage'
@@ -98,47 +192,89 @@ class ConversationContext:
                 raise BrowserError('关联开关应为布尔值。')
         row = {'source_session': source, 'target_session': target, 'target_conversation_id': cid,
                'bidirectional': False if cross_private else body.get('bidirectional', True), 'share_memory': body.get('share_memory', False)}
-        if source_kind=='GroupMessage' and row['share_memory'] and not self.owner.config.get('group_share_qq_memory',False):
-            raise BrowserError('请先开启“群聊读取所选 QQ 对话与记忆”；群聊长期记忆关联为只读。')
         memory = self.memory()
-        if row['share_memory'] and (not memory or (source_kind=='FriendMessage' and (
-                not hasattr(memory.config_manager, '_raw_config') or memory.config_manager.get('access_control.shared_private_sessions',None) is None))):
-            raise BrowserError('长期记忆共享需要支持“私聊记忆关联”的 LivingMemory。近期上下文关联不需要它。')
+        # MEMORYSKIP_V1：仅当 LivingMemory 缺失时降级为普通关联（近期上下文照常生效）；
+        # 记忆参考为只读检索，无需 LivingMemory 侧配置，其余情况一律放行。
+        memory_skipped = None
+        if row['share_memory'] and not memory:
+            memory_skipped='需先在插件市场安装并启用 LivingMemory 插件'
+            row['share_memory']=False
+        # MEMORYALIAS_V1：私聊记忆关联时自动维护身份对齐与互通适配器；
+        # LivingMemory 配齐 user 作用域 + 跨适配器共享后原生互通生效。
+        memory_note = None
+        if row['share_memory'] and memory and source_kind == 'FriendMessage':
+            alias_ok = self._sync_memory_alias(memory, source, target, add=True)
+            self._sync_shared_adapters(memory, target)
+            if self.native_share_active(source, target):
+                row['memory_native'] = True
+            elif alias_ok:
+                memory_note = '已自动对齐身份并加入互通适配器；在 LivingMemory 中把「记忆作用域模式」设为 user 并开启「跨适配器共享用户记忆」后，记忆将以原生方式全互通（未配置期间抖音对话以镜像方式写入关联记忆，效果等价）。'
+            else:
+                memory_note = 'LivingMemory 身份对齐写入失败，请在其 access_control.identity_aliases 中手动添加一行：' + self._alias_line(source, target) + '。'
+        row['memory_skipped']=memory_skipped
+        row['memory_note']=memory_note
+        persist_row={k:v for k,v in row.items() if k not in ('memory_skipped','memory_note','memory_native')}
         previous = copy.deepcopy(self.owner.config.get('conversation_links', []))
-        self.owner.config['conversation_links'] = [x for x in previous if x['source_session'] != source] + [row]
+        self.owner.config['conversation_links'] = [x for x in previous if x['source_session'] != source] + [persist_row]
         try:
             self.owner._save_config()
-            if memory and source_kind == 'FriendMessage':
-                self._sync_memory(memory, source, target if row['share_memory'] else None)
         except Exception:
             self.owner.config['conversation_links'] = previous; self.owner._save_config(); raise
         return row
 
-    def _sync_memory(self, memory, source, target):
-        manager = memory.config_manager
-        raw = manager._raw_config
-        old = copy.deepcopy(raw.get('access_control', {}))
-        lines = str(old.get('shared_private_sessions', '')).splitlines()
-        lines = [line for line in lines if line.partition('=')[0].strip() != source]
-        if target: lines.append(source + '=' + target)
-        raw.setdefault('access_control', {})['shared_private_sessions'] = '\n'.join(lines)
-        try:
-            raw.save_config(); manager._load_config()
-            if manager.get('access_control.shared_private_sessions','')!='\n'.join(lines):
-                raise BrowserError('当前 LivingMemory 版本不支持私聊记忆关联，请升级配套版本。')
-        except Exception:
-            raw['access_control'] = old; raw.save_config(); manager._load_config(); raise
-
     def remove_link(self, source):
         session_kind(source)
+        removed = [r for r in self.owner.config.get('conversation_links', []) if r['source_session'] == source]
         previous = copy.deepcopy(self.owner.config.get('conversation_links', []))
         self.owner.config['conversation_links'] = [x for x in previous if x['source_session'] != source]
         try:
             self.owner._save_config()
+            # MEMORYALIAS_V1：解绑时同步删除 LivingMemory 中的身份对齐行
             memory = self.memory()
-            if memory and session_kind(source)=='FriendMessage': self._sync_memory(memory, source, None)
+            if memory and session_kind(source) == 'FriendMessage':
+                for r in removed:
+                    if r.get('share_memory'):
+                        self._sync_memory_alias(memory, source, r['target_session'], add=False)
         except Exception:
             self.owner.config['conversation_links'] = previous; self.owner._save_config(); raise
+
+    async def mirror_write(self, event, response):
+        """MEMORYWRITE_V1：抖音私聊轮次镜像写入关联 QQ 会话的长期记忆（LivingMemory add_memory）。
+        写入作用域 = 关联对话的目标会话，adapter_id 标为对方平台——QQ 端原生检索即可召回抖音聊过的内容。
+        群聊保持只读设计：群成员发言不写入任何 QQ 个人记忆。"""
+        try:
+            if response is None or getattr(response, 'role', '') != 'assistant':
+                return
+            content = getattr(response, 'content', None)
+            if isinstance(content, str): reply = content
+            elif isinstance(content, list):
+                reply = ''.join((part.get('text', '') if isinstance(part, dict) else str(getattr(part, 'text', '') or '')) for part in content)
+            else: reply = ''
+            user_text = (event.get_message_str() or '').strip() if hasattr(event, 'get_message_str') else ''
+            reply = reply.strip()
+            if len(user_text) + len(reply) < 30: return  # 过短轮次不值得入库
+            source = event.unified_msg_origin
+            if session_kind(source) != 'FriendMessage': return
+            row = next((r for r in self.owner.config.get('conversation_links', [])
+                        if r.get('source_session') == source and r.get('share_memory')), None)
+            if not row: return
+            memory = self.memory()
+            if not memory: return
+            target = row['target_session']
+            if self.native_share_active(source, target):
+                return  # 原生互通已生效：LivingMemory 自身已在共享作用域写入，镜像退场避免重复
+            cid = row.get('target_conversation_id') or await self.owner.context.conversation_manager.get_curr_conversation_id(target)
+            conversation = await self.owner.context.conversation_manager.get_conversation(target, cid) if cid else None
+            persona = (conversation.persona_id if conversation else None)
+            if not persona:
+                default = await self.owner.context.persona_manager.get_default_persona_v3(umo=target)
+                persona = default['name'] if default else None
+            text = '【抖音对话】用户：%s\n【抖音对话】助手：%s' % (user_text[:800], reply[:800])
+            await memory.initializer.memory_engine.add_memory(
+                content=text, session_id=target, persona_id=persona, importance=0.4,
+                metadata={'adapter_id': target.partition(':')[0], 'source': 'douyin_agent_mirror'})
+        except Exception as exc:
+            logger.info('[抖音Agent] 记忆镜像写入失败=%r', exc)
 
     async def inject(self, event, request):
         session = event.unified_msg_origin
@@ -192,7 +328,8 @@ class ConversationContext:
                 eligible.append({'speaker': message['role'], 'text': text}); budget -= len(text)
                 if len(eligible) >= options['max_messages'] or budget <= 0: break
             if eligible: sources.append({'channel': other.split(':')[0], 'conversation': list(reversed(eligible))})
-            if outgoing and source_kind=='GroupMessage' and row.get('share_memory') and self.owner.config.get('group_share_qq_memory',False):
+            if outgoing and row.get('share_memory') and (
+                    source_kind=='FriendMessage' or (source_kind=='GroupMessage' and self.owner.config.get('group_share_qq_memory',False))):
                 memory=self.memory()
                 if memory:
                     try:
@@ -214,7 +351,7 @@ class ConversationContext:
                             text=str(document.content)[:min(options['max_chars_per_message'],budget)]
                             if text:excerpts.append(text);budget-=len(text)
                             if budget<=0:break
-                        if excerpts:sources.append({'channel':'管理员关联的 QQ 长期记忆（只读）','memories':excerpts})
+                        if excerpts:sources.append({'channel':'关联对话的 QQ 长期记忆（只读）','memories':excerpts})
                     except Exception:
                         pass  # Optional memory lookup must not silence ordinary chat.
             if budget <= 0: break

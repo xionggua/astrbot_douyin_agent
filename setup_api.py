@@ -53,6 +53,8 @@ class SetupAPI:
         return {'status':'ok','data':{'settings':self.owner.context_sharing.settings,
             'links':self.owner.context_sharing.links(),'source_session':self.owner.session_id(),
             'memory_available':bool(self.owner.context_sharing.memory()),
+            'memory_share_ready':bool(self.owner.context_sharing.memory_share_ready()),
+            'memory_share_hint':self.owner.context_sharing.memory_share_hint(),
             'group_share_qq_memory':self.owner.config.get('group_share_qq_memory',False)}}
 
     async def group_settings(self):
