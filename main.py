@@ -75,6 +75,17 @@ class MimiDouyinDM(Star):
         kind='GroupMessage' if peer.get('conversation_type')=='group' else 'FriendMessage'
         return 'mimi-douyin:'+kind+':'+peer['key']
 
+    def _register_proactive_session(self,umo=None):
+        """PROACTIVEREG_V2：按「允许机器人自己刷抖音」开关同步 proactive 私聊清单。
+        开关开→登记当前绑定会话（含一次性补录存量绑定）；开关关→移除本插件登记的
+        会话（不动用户手配）。bind 路径在 self.binding 更新后调用（session_id 自动
+        读当前绑定）。proactive 未装/异常均静默。"""
+        try:
+            from .mimi_douyin.proactive_integ import sync_proactive_sessions
+            sync_proactive_sessions(self)
+        except Exception:
+            pass
+
     def with_account_identity(self,peer,*,reset=False):
         # Own messages can leave the virtual list. Keep the verified identity
         # until rebinding or observing another account, including one without a name.
@@ -100,6 +111,10 @@ class MimiDouyinDM(Star):
             start_integ_loop(self)
         except Exception as exc:
             print('[proactive_integ] 启动注入循环失败 '+str(exc)[:120],flush=True)
+        # PROACTIVEREG_V1：存量绑定补登记（proactive 后装/晚启动场景由巡检兜底）
+        if self.binding:
+            self._register_proactive_session()
+            asyncio.get_event_loop().call_later(60,lambda: self._register_proactive_session())
         self.cache.start()
         logger.info('[抖音Agent] 接入已加载，自动回复=%s，已绑定=%s。',
             bool(self.config.get('auto_reply_enabled',False)),bool(self.binding))
@@ -107,6 +122,14 @@ class MimiDouyinDM(Star):
     def _save_config(self):
         save=getattr(self.config,'save_config',None)
         if save:save()
+        # PROACTIVEREG_V2：任何配置保存（WebUI 设置页/插件面板）后按开关同步
+        # 主动消息清单——开关切换即时生效。sync 内部对 config 的修改会再次
+        # 落盘但不再触发本钩子（它直接调 save_config，不走 _save_config）。
+        try:
+            from .mimi_douyin.proactive_integ import sync_proactive_sessions
+            sync_proactive_sessions(self)
+        except Exception:
+            pass
 
     @property
     def media_dir(self):return str(self.runtime.media_dir)
@@ -344,6 +367,7 @@ class MimiDouyinDM(Star):
                     if manual_key not in self.config.get(_whitelist,[]):
                         self.config[_whitelist]=[*self.config.get(_whitelist,[]),manual_key]
                         self._save_config();self.ledger.put('whitelist_initialized',True)
+                    self._register_proactive_session()
                     self.state='bound_paused';self.last_error=''
                     return {'bound':True,'peer':manual_peer,'history_baselined':True,'manual':True,
                             'note':'手动绑定生效；开浏览器时将按会话ID/名称恢复会话，请核对私信对象一致。'}
@@ -362,6 +386,7 @@ class MimiDouyinDM(Star):
                 if snapshot['peer']['key'] not in self.config.get(whitelist,[]):
                     self.config[whitelist]=[*self.config.get(whitelist,[]),snapshot['peer']['key']]
                     self._save_config();self.ledger.put('whitelist_initialized',True)
+                self._register_proactive_session()
                 self.ledger.observe(snapshot['peer']['key'],snapshot['items'],prime=True)
                 self.group_conversation.observe(snapshot)
                 self.state='bound_paused';self.last_error=''
@@ -445,6 +470,7 @@ class MimiDouyinDM(Star):
         if automatic:
             self.binding={'peer':snapshot['peer'],'bound_at':time.time(),'automatic':True}
             self.ledger.put('binding',self.binding)
+            self._register_proactive_session()
         self._check_peer(snapshot)
         return snapshot
 

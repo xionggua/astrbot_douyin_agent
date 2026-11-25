@@ -80,6 +80,84 @@ def find_recent_collision(session_id, window_seconds=600):
 
 
 # ------------------------------------------------------------------
+# PROACTIVEREG_V2：主动消息会话随「允许机器人自己刷抖音」开关自动登记/移除
+# ------------------------------------------------------------------
+def sync_proactive_sessions(owner):
+    """按 autonomy_enabled 开关同步 proactive 私聊清单。
+
+    开关开启：当前绑定的私聊会话一次性登记；后续绑定也自动登记（bind 路径调用）。
+    开关关闭：只移除本插件登记过的会话（记录在 douyin config 的 proactive_registered），
+    用户在 proactive 中手工配置的会话一概不动。proactive 未安装/异常静默降级，
+    不影响开关本身。返回 True=本次发生写入，None=无需处理，str=降级原因。
+    """
+    autonomy = bool(owner.config.get('autonomy_enabled', False))
+    umo = owner.session_id() if hasattr(owner, 'session_id') else ''
+    private = isinstance(umo, str) and umo.startswith('mimi-douyin:FriendMessage:')
+    ours = list(owner.config.get('proactive_registered', []))
+    target = umo if (autonomy and private) else None
+    if autonomy and not private:
+        return None  # 开关开但当前无绑定私聊：等 bind 时再登记
+    if target in ours and autonomy:
+        return None  # 已登记且开关仍开：幂等
+    try:
+        star = owner.context.get_registered_star(PKG)
+        if not (star and star.activated and star.star_cls):
+            return None  # proactive 未安装：静默跳过（与记忆互通同款降级语义）
+        plugin = star.star_cls
+        config = getattr(plugin, 'config', None)
+        if config is None:
+            return None
+        friend = config.get('friend_settings', {})
+        if not isinstance(friend, dict):
+            return None
+        old = list(friend.get('session_list', []))
+        changed = False
+        # 开关关闭：摘掉本插件登记过的所有会话
+        if not autonomy:
+            remaining = [x for x in ours if x in old]
+            if remaining:
+                friend['session_list'] = [x for x in old if x not in ours]
+                ours = []
+                changed = True
+        # 开关开启且当前绑定未登记：加入
+        elif target is not None and target not in old:
+            friend['session_list'] = old + [target]
+            ours = ([x for x in ours if x != target] + [target]) if target else ours
+            changed = True
+        if not changed:
+            return None
+        try:
+            save = getattr(config, 'save_config', None)
+            if save:
+                save()
+            if list(config.get('friend_settings', {}).get('session_list', [])) != friend['session_list']:
+                raise ValueError('session_list 写入未生效')
+        except Exception:
+            friend['session_list'] = old
+            save = getattr(config, 'save_config', None)
+            if save:
+                save()
+            raise
+        owner.config['proactive_registered'] = ours
+        try:
+            save_own = getattr(owner.config, 'save_config', None)
+            if save_own:
+                save_own()  # 直接落盘，不走 owner._save_config（避免递归回 sync）
+        except Exception:
+            pass
+        action = '登记' if autonomy else '移除'
+        logger.info('[proactive_integ] 已%s主动消息私聊清单（本插件登记=%s）。' % (action, ours))
+        return True
+    except Exception as exc:
+        logger.info('[proactive_integ] 主动消息会话同步失败=%r', exc)
+        return 'failed'
+
+
+def ensure_proactive_session(owner, umo):  # 兼容旧名：语义收敛到 V2 同步入口
+    return sync_proactive_sessions(owner)
+
+
+# ------------------------------------------------------------------
 # 包名解析：从 star 注册表反查真实模块名（AstrBot 非标准加载兼容）
 # ------------------------------------------------------------------
 def _resolve_pkg(owner):
