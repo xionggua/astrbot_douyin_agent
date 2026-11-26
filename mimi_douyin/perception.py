@@ -192,11 +192,37 @@ def _vm_live_key(provider_id):
                     for v in node:walk(v)
             walk(data)
             _VM_KEY_CACHE['mtime']=mtime;_VM_KEY_CACHE['keys']=found
-        return (_VM_KEY_CACHE.get('keys') or {}).get(str(provider_id))
     except Exception:
-        return None
+        _VM_KEY_CACHE.setdefault('keys',{})
+    return (_VM_KEY_CACHE.get('keys') or {}).get(str(provider_id))
+def _provider_live_key(provider):
+    """KEYFALLBACK_V1：从 provider 对象本身挖 Key（AstrBot Provider 把 key 存在
+    provider_config['key']，暴露 get_current_key()/get_keys()——不存在 .api_key/.key 属性，
+    旧 getattr 兜底从未生效过）。"""
+    for name in ('get_current_key',):
+        try:
+            getter=getattr(provider,name,None)
+            if callable(getter):
+                value=getter()
+                if isinstance(value,str) and value.strip():return value.strip()
+        except Exception:pass
+    try:
+        keys=getattr(provider,'get_keys',None)
+        if callable(keys):
+            for value in (keys() or []):
+                if isinstance(value,str) and value.strip():return value.strip()
+    except Exception:pass
+    cfg=getattr(provider,'provider_config',None)
+    if isinstance(cfg,dict):
+        value=cfg.get('key')
+        if isinstance(value,str) and value.strip():return value.strip()
+        if isinstance(value,list):
+            for item in value:
+                if isinstance(item,str) and item.strip():return item.strip()
+    return None
+
 def _vm_resolve_key(provider,provider_id=''):
-    key=_vm_live_key(provider_id) or _os.environ.get('DOUYIN_LLM_API_KEY') or getattr(provider,'api_key',None) or getattr(provider,'key',None)
+    key=_vm_live_key(provider_id) or _os.environ.get('DOUYIN_LLM_API_KEY') or _provider_live_key(provider)
     if not key:
         raise BrowserError('缺少API Key：未能从服务商配置自动读取，请检查 WebUI 中对应服务商的 API Key。')
     return key
@@ -248,7 +274,7 @@ async def _vm_asr(owner,audio_provider,paths,timeout,provider_id=''):
 async def _vm_generate(owner,provider,vm_sources,messages,max_tokens,timeout,note=None,provider_id=''):
     model=str(provider.get_model())
     import time as _t;_t0=_t.time();print('[vl_timing] 开始 model=%s timeout=%s'%(model,timeout))
-    key=_vm_live_key(provider_id) or _os.environ.get('DOUYIN_LLM_API_KEY') or getattr(provider,'api_key',None) or getattr(provider,'key',None)
+    key=_vm_live_key(provider_id) or _os.environ.get('DOUYIN_LLM_API_KEY') or _provider_live_key(provider)
     chat_url=_os.environ.get('DOUYIN_LLM_CHAT_URL') or getattr(provider,'api_base',None) or getattr(provider,'base_url',None)
     if not chat_url: chat_url='https://dashscope.aliyuncs.com/compatible-mode/v1'
     chat_url=str(chat_url).rstrip('/')+'/chat/completions'

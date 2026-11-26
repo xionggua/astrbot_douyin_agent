@@ -6,6 +6,7 @@ import json
 import re
 from pathlib import Path
 
+from astrbot.api import logger
 from astrbot.core.agent.message import ContentPart, Message, TextPart
 from astrbot.core.platform.astr_message_event import AstrMessageEvent
 from astrbot.core.platform.astrbot_message import AstrBotMessage, MessageMember
@@ -109,8 +110,12 @@ class DouyinPlatform(Platform):
         if text:
             receipt=await self.owner.proactive_send_text(str(session),text)
             if isinstance(receipt,dict) and receipt.get('state')=='sent':return
-            _st=str((receipt or {}).get('state') or 'unknown');_rs=str((receipt or {}).get('reason') or '')
-            raise BrowserError('抖音主动发送未确认：'+_st+(('：'+_rs) if _rs else ''))
+            _st=str((receipt or {}).get('state') or 'unknown')
+            _rc=str((receipt or {}).get('receipt') or '')
+            _rs=str((receipt or {}).get('reason') or (receipt or {}).get('error') or '')
+            _detail='：'.join(x for x in (_rc,_rs) if x)
+            logger.warning('[抖音Agent] 主动消息发送未确认 state=%s detail=%s text=%.40r',_st,_detail,text)
+            raise BrowserError('抖音主动发送未确认：'+_st+(('：'+_detail) if _detail else ''))
         raise BrowserError('抖音当前只回复正在处理的私信。')
     def get_client(self):return self.owner.browser
 

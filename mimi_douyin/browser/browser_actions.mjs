@@ -37,7 +37,25 @@ export async function sendReply(page,snapshot,args) {
     return rejected('recipient_mismatch','当前私信对象与已绑定对象不一致，未发送。');
   if(args.conversation_type&&before.peer.conversation_type!==args.conversation_type)
     return rejected('conversation_type_changed','会话类型已变化，没有发送。');
-  if(!before.direction_proven)return rejected('direction_unconfirmed','尚未确认消息的收发方向，未发送。');
+  let proven=!!before.direction_proven;
+  if(!proven){ // WAKESEND_V1：长闲置/跨页浏览后聊天区可能未完成水合，方向标记缺失属瞬时状态。
+    // 唤醒一次（滚动消息列表+聚焦输入框触发渲染）再复验，仍失败才拒绝——把"碰运气"变"必就绪"。
+    try{
+      await page.evaluate(()=>{
+        const editor=document.querySelector('[data-mimi-dm-editor="true"]');
+        if(editor)editor.focus();
+        const area=editor?editor.closest('[class*="im"]')||editor.parentElement:null;
+        const lists=document.querySelectorAll('[class*="msgList"],[class*="message-list"],[class*="chatList"]');
+        const target=lists.length?lists[lists.length-1]:area;
+        if(target&&target.scrollHeight!==undefined)target.scrollTop=target.scrollHeight;
+      });
+      await page.waitForTimeout(800);
+    }catch{}
+    const afterWake=await snapshot();
+    proven=!!afterWake.direction_proven;
+    try{fs.appendFileSync('/tmp/worker_debug.log',new Date().toISOString().slice(11,23)+' WAKESEND 唤醒后 direction_proven='+proven+' peer='+(afterWake.peer&&afterWake.peer.key===args.peer_key?'match':'mismatch')+'\n')}catch{}
+  }
+  if(!proven)return rejected('direction_unconfirmed','尚未确认消息的收发方向，未发送。');
   const text=String(args.text||'').trim();
   if(!text || text.length>2000)return rejected('invalid_text','回复为空或超过当前单条文字限制。');
   const normEcho=v=>String(v).replace(/[\u200b\ufeff]/g,'').split(/\n+/).map(line=>line.replace(/\s+/g,' ').trim()).filter(Boolean).join('\n'); // ECHONORM_V1：DOM innerText 会把空行合并成单换行，回显比对两边归一化

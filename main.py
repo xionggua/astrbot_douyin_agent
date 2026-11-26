@@ -884,6 +884,21 @@ class MimiDouyinDM(Star):
         add_channel_identity(event,req)
         self.group_conversation.inject(event,req)
         await self.context_sharing.inject(event,req)
+        # CROSSGUARD_V1：QQ 等其它平台的轮次，若与抖音存在关联（上下文或记忆互通），
+        # 注入话题边界——记忆/背景可作参考，但不主动接其它渠道的话头。
+        try:
+            umo=str(getattr(event,'unified_msg_origin','') or '')
+            if umo and not umo.startswith('mimi-douyin:') and self.context_sharing.links():
+                linked=[row for row in self.context_sharing.links()
+                        if row.get('source_session','').startswith('mimi-douyin:') or row.get('target_session','').startswith('mimi-douyin:')]
+                if any(row['source_session']==umo or row.get('target_session')==umo for row in linked):
+                    req.extra_user_content_parts.append(TextPart(text=(
+                        '你与对方在抖音等其它渠道也有对话和共享记忆。那些内容只是背景资料：'
+                        '本平台聊什么就聊什么，不要主动提起或接续其它渠道里聊过的话题、'
+                        '分享过的视频或你自主做过的事，除非对方先在本平台提起。'
+                        '对方问起时可以自然接上，像本来就记得一样，但不要强调“那是另一个渠道/平台”或区分来源。').mark_as_temp()))
+        except Exception:
+            pass
 
     @filter.on_llm_request(priority=maxsize+5)
     async def douyin_activity_guide(self,event,req):
