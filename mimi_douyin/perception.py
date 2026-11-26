@@ -11,6 +11,7 @@ from io import BytesIO
 from pathlib import Path
 from typing import Annotated
 
+from astrbot.api import logger
 from pydantic import BaseModel, Field, StringConstraints, ValidationError
 from .wire import ContentPart, Message, TextPart, ImageURLPart
 
@@ -136,6 +137,76 @@ def _vm_video_paths(paths):
 
 def _vm_shq(value):
     return "'"+str(value).replace("'","'\\''")+"'"
+
+_VM_LLM_SCRIPT_REMOTE='/opt/douyin_llm.py'
+_VM_LLM_SCRIPT_MD5='' # 惰性记住已确认的远端 md5，一致则跳过部署
+_VM_LLM_SCRIPT=r'''#!/usr/bin/env python3
+import sys,json,base64,os,urllib.request,urllib.error,glob,time
+for stale in glob.glob('/tmp/douyin_dm_*.bin'):
+    try:
+        if time.time()-os.path.getmtime(stale)>3600*6: os.remove(stale)
+    except OSError: pass
+req_path,out_path=sys.argv[1],sys.argv[2]
+request=json.load(open(req_path))
+vm_files=[]
+def subst(obj):
+    if isinstance(obj,dict): return {k:subst(v) for k,v in obj.items()}
+    if isinstance(obj,list): return [subst(x) for x in obj]
+    if isinstance(obj,str) and obj.startswith('__VM_FILE__'):
+        p=obj[len('__VM_FILE__'):]
+        vm_files.append(p)
+        with open(p,'rb') as fh: data=fh.read()
+        return 'data:video/mp4;base64,'+base64.b64encode(data).decode('ascii')
+    return obj
+for message in request.get('messages',[]):
+    message['content']=subst(message.get('content'))
+url=os.environ['DOUYIN_LLM_URL']; key=os.environ['DOUYIN_LLM_KEY']
+timeout=int(os.environ.get('DOUYIN_LLM_TIMEOUT','280'))
+data=json.dumps(request).encode('utf-8')
+req=urllib.request.Request(url,data=data,headers={'Authorization':'Bearer '+key,'Content-Type':'application/json'})
+try:
+    with urllib.request.urlopen(req,timeout=timeout) as resp:
+        body=resp.read().decode('utf-8')
+except urllib.error.HTTPError as exc:
+    open(out_path,'w').write(json.dumps({'error':'HTTP '+str(exc.code),'detail':exc.read().decode('utf-8','replace')[:600]}))
+    sys.exit(2)
+except Exception as exc:
+    open(out_path,'w').write(json.dumps({'error':type(exc).__name__,'detail':str(exc)[:600]}))
+    sys.exit(2)
+open(out_path,'w').write(body)
+for p in vm_files:
+    try: os.remove(p)
+    except OSError: pass
+'''
+
+async def _ensure_vm_llm_script(owner):
+    """VMSCRIPT_V1：执行前确保 VM 端 /opt/douyin_llm.py 存在且与本插件内嵌版本一致。
+    该脚本历史上只手工部署在罐头 VM，新部署（长卿等）从未有过——现随插件自部署。
+    幂等：md5 一致跳过；进程内缓存避免每轮 SSH 校验。"""
+    global _VM_LLM_SCRIPT_MD5
+    import hashlib as _hashlib
+    expected=_hashlib.md5(_VM_LLM_SCRIPT.encode('utf-8')).hexdigest()
+    if _VM_LLM_SCRIPT_MD5==expected:
+        return
+    _ssh_key=str(owner.config.get('vm_ssh_key') or '/root/.ssh/douyin_vm');_ssh_port=str(owner.config.get('vm_ssh_port') or 2222)
+    _ssh_user=str(owner.config.get('vm_ssh_user') or 'root');_ssh_host=str(owner.config.get('vm_ssh_host') or '127.0.0.1')
+    probe='md5sum '+_VM_LLM_SCRIPT_REMOTE+' 2>/dev/null || echo MISSING'
+    proc=await asyncio.create_subprocess_exec('ssh','-i',_ssh_key,'-p',_ssh_port,'-o','BatchMode=yes','-o','ConnectTimeout=10',_ssh_user+'@'+_ssh_host,probe,stdout=asyncio.subprocess.PIPE,stderr=asyncio.subprocess.PIPE)
+    stdout,stderr=await proc.communicate()
+    remote_out=(stdout or b'').decode('utf-8','replace').strip()
+    if remote_out.startswith(expected):
+        _VM_LLM_SCRIPT_MD5=expected
+        return
+    write=('mkdir -p /opt && cat > '+_VM_LLM_SCRIPT_REMOTE+" <<'DOUYIN_LLM_EOF'\n"
+           +_VM_LLM_SCRIPT+'\nDOUYIN_LLM_EOF\n'
+           +'chmod 644 '+_VM_LLM_SCRIPT_REMOTE+' && md5sum '+_VM_LLM_SCRIPT_REMOTE)
+    proc=await asyncio.create_subprocess_exec('ssh','-i',_ssh_key,'-p',_ssh_port,'-o','BatchMode=yes','-o','ConnectTimeout=10',_ssh_user+'@'+_ssh_host,write,stdin=asyncio.subprocess.PIPE,stdout=asyncio.subprocess.PIPE,stderr=asyncio.subprocess.PIPE)
+    stdout,stderr=await proc.communicate(_VM_LLM_SCRIPT.encode('utf-8'))
+    out=(stdout or b'').decode('utf-8','replace')
+    if expected not in out:
+        raise BrowserError('VM 转述脚本自动部署未确认（md5 不符）：'+out[-200:])
+    _VM_LLM_SCRIPT_MD5=expected
+    logger.info('[抖音Agent] 已自动部署 VM 转述脚本到远程主机（%s）。' % _VM_LLM_SCRIPT_REMOTE)
 
 def _vm_strip_json(content):
     import re
@@ -306,6 +377,7 @@ async def _vm_generate(owner,provider,vm_sources,messages,max_tokens,timeout,not
     tag=_uuid.uuid4().hex[:12]
     req_path='/tmp/douyin_vm_'+tag+'.req.json'
     resp_remote='/tmp/douyin_vm_'+tag+'.resp.json'
+    await _ensure_vm_llm_script(owner) # VMSCRIPT_V1：脚本缺失自动部署（幂等）
     with open(req_path,'w',encoding='utf-8') as fh: json.dump(request,fh,ensure_ascii=False)
     try:
         with open(req_path,'rb') as fh: req_bytes=fh.read()
